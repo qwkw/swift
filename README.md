@@ -51,34 +51,6 @@ FRED_API_KEY=your32characterkeyhere
 
 The server binds to `127.0.0.1` only. The key is used server-side and never sent to the page.
 
-## Hosting (free, with a password)
-
-Swift runs as a website on **Render's free tier**, so it's up while your computer is off.
-
-1. Sign in at https://render.com with GitHub and let Render read this repo.
-2. **New → Blueprint**, pick the repo. `render.yaml` sets everything up.
-3. When asked, enter `FRED_API_KEY` and a `SWIFT_PASSWORD`.
-4. Deploy. Your site is `https://swift-xxxx.onrender.com`. Log in with any username and that password.
-
-Free instances sleep after 15 minutes without visits (the first visit after takes ~1 minute). To keep
-it awake, add a free monitor at https://uptimerobot.com pinging `https://<your-site>/healthz` every
-5–10 minutes. One always-on free instance fits in Render's monthly free hours.
-
-Hosted mode (on whenever the `PORT` environment variable is set):
-
-- listens on `0.0.0.0`
-- takes the key from `FRED_API_KEY` instead of prompting
-- puts the whole site behind `SWIFT_PASSWORD` (HTTP basic auth)
-- limits each visitor to `SWIFT_RATE` API calls a minute (default 240)
-- saves layouts in each visitor's browser rather than on the server
-
-All visitors share one data cache, so more visitors barely adds upstream load. Free-tier disks reset on
-redeploy, which also resets the options history. Some sources throttle cloud IPs more than home ones.
-Keep the password on: Cboe, Yahoo and ForexFactory don't allow public redistribution.
-
-The `Dockerfile` also runs anywhere else that takes containers (Koyeb, Fly.io, Hugging Face Spaces,
-a VPS). Set `PORT`, `FRED_API_KEY` and `SWIFT_PASSWORD` there.
-
 ---
 
 ## What's in it

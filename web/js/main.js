@@ -21,8 +21,7 @@ const app = {
   async load() {
     let st = null;
     try { st = JSON.parse(localStorage.getItem(KEY)); } catch { /* storage blocked */ }
-    try { app.hosted = (await fetch("/api/config").then((r) => r.json())).hosted; } catch { /* older server */ }
-    if (!st && !app.hosted) { try { st = await fetch("/api/layout").then((r) => r.json()); } catch { /* none saved */ } }
+    if (!st) { try { st = await fetch("/api/layout").then((r) => r.json()); } catch { /* none saved */ } }
     app.state = st && st.v === 1 ? st : defaults();
     // migration: offer default workspaces added after this layout was saved (once each)
     const seen = (app.state.seenWorkspaces ||= app.state.workspaces.map((w) => w.name));
@@ -33,7 +32,6 @@ const app = {
     return () => {
       try { localStorage.setItem(KEY, JSON.stringify(app.state)); } catch { /* storage blocked */ }
       clearTimeout(t);
-      if (app.hosted) return;   // hosted: each visitor keeps their own layout in their browser
       t = setTimeout(() => fetch("/api/layout", { method: "POST", body: JSON.stringify(app.state) }).catch(() => {}), 1500);
     };
   })(),
@@ -279,7 +277,7 @@ function renderStatus() {
     h("span.muted", `updated ${new Date().toLocaleTimeString()}`),
     h("span.grow"),
     h("span.muted", THEMES[app.state.theme]),
-    h("span.muted", (app.hosted ? "hosted" : "127.0.0.1") + " · free sources, most delayed"));
+    h("span.muted", "127.0.0.1 · free sources, most delayed"));
 }
 onHealth(() => { clearTimeout(renderStatus.t); renderStatus.t = setTimeout(renderStatus, 300); });
 

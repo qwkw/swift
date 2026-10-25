@@ -1,0 +1,7 @@
+.git
+.env
+cache/
+layouts/
+data/
+__pycache__/
+*.pyc

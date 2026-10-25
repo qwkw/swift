@@ -6,16 +6,29 @@
   python start.py --reset-key     enter a new FRED key
   python start.py --no-browser    don't open a browser tab
 
-Stdlib only, no installs. Binds to 127.0.0.1: the key stays on this machine and never reaches the page.
+Hosted mode (cloud, see README "Hosting"): on when the PORT env var is set, or with --public.
+  env PORT            port to listen on (set by Render, Koyeb, HF Spaces, ...)
+  env FRED_API_KEY    the FRED key (no prompt in hosted mode)
+  env SWIFT_PASSWORD  optional: put the whole site behind a login (any username, this password)
+  env SWIFT_RATE      optional: API requests per minute per visitor (default 240)
+In hosted mode the server listens on 0.0.0.0, layouts are saved only in each visitor's browser,
+and /healthz answers without a password for uptime pingers.
+
+Stdlib only, no installs. The FRED key is used server-side and never reaches the page.
 """
 from __future__ import annotations
 
+import base64
+import collections
+import hmac
 import http.server
 import json
+import os
 import socket
 import socketserver
 import sys
 import threading
+import time
 import traceback
 import urllib.parse as up
 import urllib.request
@@ -35,6 +48,7 @@ if sys.version_info < (3, 9):
 ENV = HERE / ".env"
 WEB = HERE / "web"
 LAYOUTS = HERE / "layouts"
+CONF = {"hosted": False, "password": "", "rate": 240}
 BANNER = r"""
    ____          _  __ _
   / ___|_      _(_)/ _| |_
@@ -66,8 +80,10 @@ def check_fred(key: str) -> bool:
 
 def ensure_key(reset: bool):
     env = read_env()
-    if env.get("FRED_API_KEY") and not reset:
+    if (env.get("FRED_API_KEY") or os.environ.get("FRED_API_KEY")) and not reset:
         return
+    if CONF["hosted"]:
+        sys.exit("  FRED_API_KEY is not set. Add it as an environment variable on your host.")
     print("  Swift needs one free API key, from FRED (St. Louis Fed).")
     print("  Get it in a minute at  https://fred.stlouisfed.org/docs/api/api_key.html\n")
     while True:
@@ -99,6 +115,8 @@ def make_handler():
     from swift.net import cached
     pool = ThreadPoolExecutor(16)
     LAYOUTS.mkdir(exist_ok=True)
+    hits: dict = {}
+    hits_lock = threading.Lock()
 
     def one_series(sid):
         try:
@@ -130,12 +148,53 @@ def make_handler():
             self.end_headers()
             self.wfile.write(b)
 
+        def _gate(self, path) -> bool:
+            """Password + per-visitor rate limit. False means the request was already answered."""
+            if path == "/healthz":
+                return True
+            pw = CONF["password"]
+            if pw:
+                auth = self.headers.get("Authorization", "")
+                ok = False
+                if auth.startswith("Basic "):
+                    try:
+                        ok = hmac.compare_digest(base64.b64decode(auth[6:]).decode().partition(":")[2].encode(),
+                                                 pw.encode())
+                    except Exception:
+                        ok = False
+                if not ok:
+                    self.send_response(401)
+                    self.send_header("WWW-Authenticate", 'Basic realm="swift"')
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return False
+            if path.startswith("/api/"):
+                fwd = self.headers.get("X-Forwarded-For", "") if CONF["hosted"] else ""
+                ip = fwd.split(",")[0].strip() or self.client_address[0]
+                now = time.time()
+                with hits_lock:
+                    dq = hits.setdefault(ip, collections.deque())
+                    while dq and dq[0] < now - 60:
+                        dq.popleft()
+                    dq.append(now)
+                    over = len(dq) > CONF["rate"]
+                if over:
+                    self._json({"error": "rate limit: slow down"}, 429)
+                    return False
+            return True
+
         def do_GET(self):
             u = up.urlsplit(self.path)
+            if not self._gate(u.path):
+                return
+            if u.path == "/healthz":
+                return self._json({"ok": True, "app": "swift @negvol"})
             if not u.path.startswith("/api/"):
                 return super().do_GET()
             q = up.parse_qs(u.query)
             try:
+                if u.path == "/api/config":
+                    return self._json({"hosted": CONF["hosted"]})
                 if u.path == "/api/catalog":
                     return self._json(catalog.catalog())
                 if u.path == "/api/series":
@@ -152,6 +211,8 @@ def make_handler():
                     payload, meta = cached("q:" + ",".join(syms), 30, lambda: series.quotes(list(syms)), disk=False)
                     return self._json({"quotes": payload, **meta})
                 if u.path == "/api/layout":
+                    if CONF["hosted"]:
+                        return self._json(None)
                     f = LAYOUTS / "layout.json"
                     return self._json(json.loads(f.read_text(encoding="utf-8")) if f.exists() else None)
                 return self._json({"error": "no such endpoint"}, 404)
@@ -160,7 +221,9 @@ def make_handler():
                 return self._json({"error": str(e)[:300]}, 502)
 
         def do_POST(self):
-            if self.path != "/api/layout":
+            if not self._gate(self.path):
+                return
+            if self.path != "/api/layout" or CONF["hosted"]:
                 return self._json({"error": "no such endpoint"}, 404)
             body = self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 5_000_000))
             json.loads(body)
@@ -173,7 +236,12 @@ def make_handler():
 def main():
     args = sys.argv[1:]
     port = int(args[args.index("--port") + 1]) if "--port" in args else None
-    print(BANNER)
+    CONF["hosted"] = bool(os.environ.get("PORT")) or "--public" in args
+    CONF["password"] = os.environ.get("SWIFT_PASSWORD", "")
+    CONF["rate"] = int(os.environ.get("SWIFT_RATE", "240"))
+    if os.environ.get("PORT"):
+        port = int(os.environ["PORT"])
+    print(BANNER, flush=True)
     try:
         ensure_key("--reset-key" in args)
     except (KeyboardInterrupt, EOFError):
@@ -181,11 +249,16 @@ def main():
     port = port or free_port(8777)
     socketserver.ThreadingTCPServer.allow_reuse_address = True
     socketserver.ThreadingTCPServer.daemon_threads = True
-    with socketserver.ThreadingTCPServer(("127.0.0.1", port), make_handler()) as srv:
+    bind = "0.0.0.0" if CONF["hosted"] else "127.0.0.1"
+    with socketserver.ThreadingTCPServer((bind, port), make_handler()) as srv:
         url = f"http://127.0.0.1:{port}/"
-        print(f"  Swift is running  ->  {url}")
+        if CONF["hosted"]:
+            lock = "password on" if CONF["password"] else "NO PASSWORD: anyone with the URL can use it"
+            print(f"  Swift hosted mode: listening on {bind}:{port} ({lock})", flush=True)
+        else:
+            print(f"  Swift is running  ->  {url}")
         print("  Ctrl-C to stop.  First load fetches ~40 feeds, give it a few seconds.\n")
-        if "--no-browser" not in args:
+        if "--no-browser" not in args and not CONF["hosted"]:
             threading.Timer(0.8, lambda: webbrowser.open(url)).start()
         try:
             srv.serve_forever()

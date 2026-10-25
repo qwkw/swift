@@ -1,0 +1,13 @@
+# swift · @negvol — Render blueprint (Dashboard -> New -> Blueprint -> pick this repo)
+services:
+  - type: web
+    name: swift
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: FRED_API_KEY      # Render asks for it at setup; never committed
+        sync: false
+      - key: SWIFT_PASSWORD    # site login password (any username)
+        sync: false

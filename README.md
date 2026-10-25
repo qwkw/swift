@@ -14,7 +14,7 @@ by **@negvol**
 ## Quick start
 
 ```bash
-git clone https://github.com/<you>/swift.git
+git clone https://github.com/qwkw/swift.git
 cd swift
 python start.py
 ```
